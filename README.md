@@ -17,6 +17,7 @@ journalctl --user -u nora-puente -f             # qué hace
 nora-puente --usos        # imprime las fichas de Usos y sale
 nora-puente seguir        # cliente del socket local: estado por la salida, órdenes por la entrada
 nora-puente bahia         # pone (o pone al día) el extra de la barra de Bahía
+nora-puente aviso "Título" "texto"   # un aviso en la consola
 nora-puente --ip 10.0.0.5 # otra consola (o NORA_IP)
 ```
 
@@ -52,8 +53,24 @@ TCP `:7070`, un JSON por línea. La consola hace de servidor (así no choca con 
 | `{"tipo":"dato","app","nombre","valor"}` | PC → consola | la app lo lee con `nora.dato("app.nombre")` |
 | `{"tipo":"ajuste","volumen","brillo"}` | los dos | 0–100; la consola contesta siempre con los valores que han quedado |
 | `{"tipo":"estado","app","nombre_app","bateria","cargando"}` | consola → PC | cuando cambia la app abierta o la batería |
+| `{"tipo":"aviso","titulo","texto","app","accion"}` | PC → consola | cae desde arriba; con A la consola manda `{"tipo":"accion","nombre"}` |
+| `{"tipo":"permiso","id","herramienta","orden","detalle","carpeta","siempre","plazo"}` | PC → consola | pantalla de permiso: A permite, B rechaza, Y siempre |
+| `{"tipo":"respuesta","id","ok","siempre"}` | consola → PC | la respuesta, que vuelve al hook que preguntó |
+| `{"tipo":"permiso_cancelado","id"}` | PC → consola | la terminal ya decidió: fuera la pantalla |
 
-Ya implementado: lo de arriba. Pendiente: `aviso`, `permiso`/`respuesta`, `accion`, `app.instalar`, `captura`.
+Ya implementado: lo de arriba (la `accion` de un aviso llega al puente, pero aún no hace nada). Pendiente: `app.instalar`, `captura`.
+
+## Claude Code
+
+Dos hooks en `~/.claude/settings.json`:
+
+```json
+"Stop":              [{ "hooks": [{ "type": "command", "command": "~/.cargo/bin/nora-puente claude-terminado", "async": true }] }],
+"PermissionRequest": [{ "hooks": [{ "type": "command", "command": "~/.cargo/bin/nora-puente permiso", "timeout": 75 }] }]
+```
+
+- **`claude-terminado`**: un aviso «Claude ha terminado» con el proyecto y el principio de la respuesta.
+- **`permiso`**: la consola pita y enseña lo que Claude quiere hacer; A permite, B rechaza, Y permite y añade la regla que sugiere Claude Code. Si la consola no está conectada, o no se contesta en 60 s, no dice nada y pregunta la terminal como siempre.
 
 ## Licencia
 

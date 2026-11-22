@@ -5,12 +5,17 @@
 //! cada vez que cambia. Lo que manda el cliente:
 //!   `{"tipo":"ajuste","volumen":0..100,"brillo":0..100}`  → a la consola
 //!   `{"tipo":"aviso","titulo","texto","app"}`              → a la consola
+//!   `{"tipo":"permiso","id",…}`  → a la consola; su `{"tipo":"respuesta","id",…}`
+//!     vuelve solo a este cliente. Si el cliente se va antes, la consola recibe
+//!     `{"tipo":"permiso_cancelado","id"}`; si se va la consola, el cliente recibe
+//!     `{"tipo":"respuesta","id","sin_consola":true}`.
 //!
 //! `nora-puente seguir` es un cliente hecho para quien solo sabe lanzar un
 //! programa y leer sus líneas (la lógica de un extra de Bahía): copia el socket a su
 //! salida y su entrada al socket, y si el puente no está lo dice
 //! (`{"tipo":"estado","puente":false}`) y vuelve a intentarlo.
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -33,26 +38,70 @@ fn permitido(m: &Value) -> bool {
     matches!(m["tipo"].as_str(), Some("ajuste" | "aviso"))
 }
 
-fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<String>>>) {
+/// Un cliente al que se le puede escribir desde varios hilos, línea a línea.
+pub type Escritor = Arc<Mutex<UnixStream>>;
+/// Los permisos que esperan respuesta de la consola: id → quién la espera.
+pub type Esperando = Arc<Mutex<HashMap<String, Escritor>>>;
+
+fn escribe(w: &Escritor, linea: &str) -> io::Result<()> {
+    let mut l = linea.to_string();
+    l.push('\n');
+    w.lock().unwrap().write_all(l.as_bytes())
+}
+
+/// La consola ha contestado a un permiso: a quien lo pidió.
+pub fn responder(esperando: &Esperando, m: &Value) {
+    let id = m["id"].as_str().map(str::to_string).unwrap_or_else(|| m["id"].to_string());
+    if let Some(w) = esperando.lock().unwrap().remove(&id) {
+        let _ = escribe(&w, &m.to_string());
+    }
+}
+
+/// Se ha ido la consola: nadie va a contestar los permisos pendientes.
+pub fn sin_consola(esperando: &Esperando) {
+    for (id, w) in esperando.lock().unwrap().drain() {
+        let _ = escribe(&w, &serde_json::json!({"tipo": "respuesta", "id": id, "sin_consola": true}).to_string());
+    }
+}
+
+fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<String>>>, esperando: Esperando) {
     let Ok(lee) = s.try_clone() else { return };
+    let w: Escritor = Arc::new(Mutex::new(s));
     // lo que manda el cliente
-    thread::spawn(move || {
-        for linea in BufReader::new(lee).lines() {
-            let Ok(linea) = linea else { break };
-            match serde_json::from_str::<Value>(&linea) {
-                Ok(m) if permitido(&m) => {
-                    let _ = a_consola.lock().unwrap().send(m.to_string());
+    {
+        let w = w.clone();
+        thread::spawn(move || {
+            let mut mios: Vec<String> = Vec::new();
+            for linea in BufReader::new(lee).lines() {
+                let Ok(linea) = linea else { break };
+                match serde_json::from_str::<Value>(&linea) {
+                    Ok(m) if m["tipo"] == "permiso" => {
+                        let Some(id) = m["id"].as_str() else { continue };
+                        esperando.lock().unwrap().insert(id.to_string(), w.clone());
+                        mios.push(id.to_string());
+                        crate::log!("permiso: {} · {}", m["herramienta"].as_str().unwrap_or("?"),
+                                    m["orden"].as_str().unwrap_or("").chars().take(80).collect::<String>());
+                        let _ = a_consola.lock().unwrap().send(m.to_string());
+                    }
+                    Ok(m) if permitido(&m) => {
+                        let _ = a_consola.lock().unwrap().send(m.to_string());
+                    }
+                    Ok(m) => crate::log!("socket local: «{}» no se atiende", m["tipo"].as_str().unwrap_or("?")),
+                    Err(_) => crate::log!("socket local: línea que no es JSON"),
                 }
-                Ok(m) => crate::log!("socket local: «{}» no se atiende", m["tipo"].as_str().unwrap_or("?")),
-                Err(_) => crate::log!("socket local: línea que no es JSON"),
             }
-        }
-    });
+            // se fue sin esperar la respuesta (la terminal decidió, o se cansó): que la consola lo quite
+            for id in mios {
+                if esperando.lock().unwrap().remove(&id).is_some() {
+                    let _ = a_consola.lock().unwrap().send(serde_json::json!({"tipo": "permiso_cancelado", "id": id}).to_string());
+                }
+            }
+        });
+    }
     // el estado, ahora y en cada cambio
-    let mut w = s;
     let (mut c, mut vista) = estado.ver();
     loop {
-        if writeln!(w, "{}", c.json()).is_err() {
+        if escribe(&w, &c.json().to_string()).is_err() {
             return;
         }
         loop {
@@ -66,7 +115,7 @@ fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<Strin
     }
 }
 
-pub fn servir(estado: Arc<Estado>, a_consola: Sender<String>) {
+pub fn servir(estado: Arc<Estado>, a_consola: Sender<String>, esperando: Esperando) {
     let ruta = ruta();
     if UnixStream::connect(&ruta).is_ok() {
         crate::log!("socket local: ya hay otro puente en {}; este no lo abre", ruta.display());
@@ -83,8 +132,8 @@ pub fn servir(estado: Arc<Estado>, a_consola: Sender<String>) {
     let a_consola = Arc::new(Mutex::new(a_consola));
     thread::spawn(move || {
         for s in escucha.incoming().flatten() {
-            let (e, a) = (estado.clone(), a_consola.clone());
-            thread::spawn(move || cliente(s, e, a));
+            let (e, a, p) = (estado.clone(), a_consola.clone(), esperando.clone());
+            thread::spawn(move || cliente(s, e, a, p));
         }
     });
 }

@@ -12,6 +12,7 @@
 //!     nora-puente bahia           pone (o pone al día) el extra de la barra de Bahía
 //!     nora-puente aviso T [texto] manda un aviso a la consola
 //!     nora-puente claude-terminado  para el hook `Stop` de Claude Code (su JSON por la entrada)
+//!     nora-puente permiso         para el hook `PermissionRequest`: pregunta a la consola (A/B/Y)
 //!
 //! Además abre un socket local para sus caras (ver `local.rs`) y, si usas
 //! Bahía, le deja el extra «Nora» de la barra (ver `bahia.rs`).
@@ -27,6 +28,7 @@ mod avisos;
 mod bahia;
 mod estado;
 mod local;
+mod permisos;
 mod usos;
 
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
@@ -112,7 +114,7 @@ fn mandar(w: &mut TcpStream, linea: &str) -> io::Result<()> {
     w.write_all(b"\n")
 }
 
-fn atender(linea: &[u8], estado: &Estado) {
+fn atender(linea: &[u8], estado: &Estado, esperando: &local::Esperando) {
     let Ok(m) = serde_json::from_slice::<Value>(linea) else {
         log!("la consola manda algo que no es JSON: {}", String::from_utf8_lossy(linea));
         return;
@@ -130,13 +132,24 @@ fn atender(linea: &[u8], estado: &Estado) {
             estado.cambiar(|c| c.mezclar(&m));
         }
         "estado" | "ajuste" => estado.cambiar(|c| c.mezclar(&m)),
+        "respuesta" => {
+            log!("permiso {}: {}", m["id"].as_str().unwrap_or("?"),
+                 if m["ok"] == true { if m["siempre"] == true { "permitido siempre" } else { "permitido" } } else { "rechazado" });
+            local::responder(esperando, &m);
+        }
         "accion" => log!("la consola pide «{}» (aún no hace nada)", m["nombre"].as_str().unwrap_or("?")),
         otro => log!("la consola manda «{otro}» (aún no se atiende)"),
     }
 }
 
 /// Una conexión con la consola, hasta que se corte.
-fn sesion(s: TcpStream, datos: &Compartido, estado: &Estado, pedidos: &Receiver<String>) -> io::Result<()> {
+fn sesion(
+    s: TcpStream,
+    datos: &Compartido,
+    estado: &Estado,
+    pedidos: &Receiver<String>,
+    esperando: &local::Esperando,
+) -> io::Result<()> {
     s.set_nodelay(true)?;
     s.set_read_timeout(Some(Duration::from_millis(200)))?;
     s.set_write_timeout(Some(Duration::from_secs(3)))?;
@@ -161,7 +174,7 @@ fn sesion(s: TcpStream, datos: &Compartido, estado: &Estado, pedidos: &Receiver<
             oido = Instant::now();
         }
         if buf.last() == Some(&b'\n') {
-            atender(buf.trim_ascii_end(), estado);
+            atender(buf.trim_ascii_end(), estado, esperando);
             buf.clear();
         }
         if oido.elapsed() > SILENCIO {
@@ -198,6 +211,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("aviso") => return avisos::orden_aviso(&args[1..]),
         Some("claude-terminado") => return avisos::orden_claude_terminado(),
+        Some("permiso") => return permisos::orden_permiso(),
         _ => {}
     }
     if args.first().map(String::as_str) == Some("bahia") {
@@ -246,7 +260,8 @@ fn main() {
         let a = a_consola.clone();
         thread::spawn(move || avisos::servicio_notificaciones(a));
     }
-    local::servir(estado.clone(), a_consola);
+    let esperando: local::Esperando = Arc::default();
+    local::servir(estado.clone(), a_consola, esperando.clone());
 
     let datos: Compartido = Arc::default();
     {
@@ -265,10 +280,11 @@ fn main() {
                     c.conectada = true;
                     c.ip = destino.ip().to_string();
                 });
-                if let Err(e) = sesion(s, &datos, &estado, &pedidos) {
+                if let Err(e) = sesion(s, &datos, &estado, &pedidos, &esperando) {
                     log!("desconectado: {e}");
                 }
                 estado.cambiar(|c| c.conectada = false);
+                local::sin_consola(&esperando);
             }
             Err(e) => {
                 if !avisado {
