@@ -492,6 +492,172 @@ pub fn orden_poner_tema(args: &[String]) {
     }
 }
 
+/// Huella de un archivo (FNV-1a de 64 bits): para saber qué ha cambiado.
+fn huella(datos: &[u8]) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in datos {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+fn cache_actualizado() -> PathBuf {
+    let base = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+    });
+    base.join("nora-puente").join("actualizado.json")
+}
+
+/// Lo que va a la consola desde el repo de Nora OS: (archivo en el PC, ruta dentro de /mnt/mmc/nora).
+fn archivos_de_nora(repo: &Path) -> Vec<(PathBuf, String)> {
+    let mut l = Vec::new();
+    for (de, a) in [
+        ("nucleo/nora", "bin/nora"),
+        ("herramientas/pulsar", "bin/pulsar"),
+        ("arranque/pulsada", "bin/pulsada"),
+        ("arranque/soltar", "bin/soltar"),
+        ("arranque/arranque.sh", "arranque.sh"),
+        ("arranque/dmenu-nora.sh", "dmenu-nora.sh"),
+        ("arranque/logo/arranque.565", "arranque.565"),
+    ] {
+        if repo.join(de).is_file() {
+            l.push((repo.join(de), a.to_string()));
+        }
+    }
+    // solo lo que está en git (nada de archivos de trabajo sueltos)
+    let en_git: Option<Vec<String>> = std::process::Command::new("git")
+        .args(["-C", &repo.to_string_lossy(), "ls-files", "apps", "lib", "temas", "sonidos"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect());
+    for dir in ["apps", "lib", "temas", "sonidos"] {
+        for (rel, _) in archivos(&repo.join(dir)) {
+            let ruta = format!("{dir}/{rel}");
+            if dir == "sonidos" && (!rel.ends_with(".wav") || rel.contains('/')) {
+                continue; // generar.py, las fuentes…
+            }
+            if en_git.as_ref().is_some_and(|g| !g.contains(&ruta)) {
+                continue;
+            }
+            l.push((repo.join(dir).join(&rel), ruta));
+        }
+    }
+    l
+}
+
+/// `nora-puente actualizar [--todo] [--repo carpeta] [--sin-relanzar]`
+pub fn orden_actualizar(args: &[String]) {
+    let todo = args.iter().any(|a| a == "--todo");
+    let relanzar = !args.iter().any(|a| a == "--sin-relanzar");
+    let repo = args
+        .iter()
+        .position(|a| a == "--repo")
+        .and_then(|i| args.get(i + 1))
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("NORA_OS").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Proyectos/nora-os"));
+    if !repo.join("nucleo/nora.c").is_file() {
+        sale(&format!("{} no parece el repo de Nora OS (usa --repo o NORA_OS)", repo.display()));
+    }
+    if !repo.join("nucleo/nora").is_file() {
+        sale("falta el núcleo compilado: nucleo/construir.sh");
+    }
+    let ruta_cache = cache_actualizado();
+    let mut cache: Map<String, Value> = std::fs::read_to_string(&ruta_cache)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    // lo que ha cambiado
+    let mut cambiados: Vec<(String, Vec<u8>, String)> = Vec::new();
+    for (local, remota) in archivos_de_nora(&repo) {
+        let Ok(datos) = std::fs::read(&local) else { continue };
+        let h = huella(&datos);
+        if todo || cache.get(&remota).and_then(Value::as_str) != Some(h.as_str()) {
+            cambiados.push((remota, datos, h));
+        }
+    }
+    if cambiados.is_empty() {
+        println!("Nora ya está al día en la consola (--todo para mandarlo todo igualmente)");
+        return;
+    }
+    let total: usize = cambiados.iter().map(|c| c.1.len()).sum();
+    println!("{} archivos cambiados ({} KB):", cambiados.len(), total / 1024);
+    for (r, d, _) in &cambiados {
+        println!("  {r} ({} KB)", d.len() / 1024);
+    }
+    let mut p = Puente::abrir().unwrap_or_else(|e| sale(&e));
+    let pedido = pedido_nuevo();
+    let base = json!({"tipo": "app.instalar", "clase": "nora", "id": "nora", "pedido": pedido, "abrir": relanzar});
+    // mensajes de ~1 MB: los pequeños juntos; los grandes, a trozos
+    let mut mensajes: Vec<Value> = Vec::new();
+    let mut juntos = Map::new();
+    let mut llevo = 0;
+    for (r, d, _) in &cambiados {
+        if d.len() > TROZO {
+            let de = d.len().div_ceil(TROZO);
+            for (i, t) in d.chunks(TROZO).enumerate() {
+                let mut m = base.clone();
+                m["partes"] = json!({ r.clone(): {"i": i + 1, "de": de, "datos": base64(t)} });
+                mensajes.push(m);
+            }
+            continue;
+        }
+        juntos.insert(r.clone(), Value::String(base64(d)));
+        llevo += d.len();
+        if llevo >= TROZO {
+            let mut m = base.clone();
+            m["archivos"] = Value::Object(std::mem::take(&mut juntos));
+            mensajes.push(m);
+            llevo = 0;
+        }
+    }
+    if !juntos.is_empty() || mensajes.is_empty() {
+        let mut m = base.clone();
+        m["archivos"] = Value::Object(juntos);
+        mensajes.push(m);
+    }
+    let n = mensajes.len();
+    for (i, mut m) in mensajes.into_iter().enumerate() {
+        m["fin"] = Value::Bool(i + 1 == n);
+        p.manda(&m).unwrap_or_else(|e| sale(&e));
+        if n > 2 {
+            eprint!("\r  mandando {}/{n}…", i + 1);
+        }
+    }
+    if n > 2 {
+        eprintln!();
+    }
+    let r = p.espera(&pedido, Duration::from_secs(120)).unwrap_or_else(|e| sale(&e));
+    if r["ok"] != true {
+        sale(r["error"].as_str().unwrap_or("la consola no lo ha aceptado"));
+    }
+    for (rem, _, h) in &cambiados {
+        cache.insert(rem.clone(), Value::String(h.clone()));
+    }
+    if let Some(d) = ruta_cache.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(&ruta_cache, Value::Object(cache).to_string());
+    println!("{} archivos puestos en la consola", r["archivos"]);
+    if r["relanza"] != true {
+        println!("(Nora no arranca sola o --sin-relanzar: los cambios del núcleo y del sistema se verán al reiniciarla)");
+        return;
+    }
+    println!("Nora se vuelve a abrir…");
+    drop(p);
+    thread::sleep(Duration::from_secs(3));
+    for _ in 0..30 {
+        if let Ok(_p) = Puente::abrir() {
+            println!("Nora vuelve a estar en marcha");
+            return;
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+    println!("Nora no ha vuelto en 30 s: mira la consola (nora-puente log)");
+}
+
 /// `nora-puente captura [archivo.png]`
 pub fn orden_captura(args: &[String]) {
     let destino = PathBuf::from(args.first().map(String::as_str).unwrap_or("nora-captura.png"));

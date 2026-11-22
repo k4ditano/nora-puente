@@ -28,6 +28,7 @@ nora-puente captura pantalla.png        # la pantalla de la consola, en PNG
 nora-puente pulsar A ABAJO --ms 90      # pulsar botones de la consola desde el PC
 nora-puente log [-f]                    # lo que escriben las apps (nora.log) y sus errores
 nora-puente tema mi-tema/ --poner       # instala un tema (y lo pone); temas, poner-tema <id>
+nora-puente actualizar                  # pone en la consola lo que ha cambiado del repo de Nora OS y la relanza
 ```
 
 `instalar` dice si la app ha abierto bien o el error de Lua con su traza (y sale con

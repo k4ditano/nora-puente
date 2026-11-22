@@ -238,6 +238,10 @@ Apps y juegos:
                                       ENCENDIDO: corto = reposo, --ms 1200 = menú de apagado
   log [-f] [-n N] [--app id]          lo que escriben las apps (nora.log), aperturas y errores
 
+Nora:
+  actualizar [--todo] [--repo DIR]    pone en la consola lo que ha cambiado del repo de Nora OS
+                                      (núcleo, apps, librería, temas, sonidos, arranque) y la relanza
+
 Temas:
   tema <carpeta> [--poner] [--id X]   instala (o pone al día) un tema; con --poner, lo pone
   temas                               los temas de la consola (y cuál está puesto)
@@ -270,6 +274,7 @@ fn main() {
         Some("borrar-datos") => return apps::orden_borrar_datos(&args[1..]),
         Some("abrir") => return apps::orden_abrir(&args[1..]),
         Some("tema") => return apps::orden_tema(&args[1..]),
+        Some("actualizar") => return apps::orden_actualizar(&args[1..]),
         Some("temas") => return apps::orden_temas(),
         Some("poner-tema") => return apps::orden_poner_tema(&args[1..]),
         Some("captura") => return apps::orden_captura(&args[1..]),
