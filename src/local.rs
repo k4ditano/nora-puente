@@ -9,6 +9,9 @@
 //!     vuelve solo a este cliente. Si el cliente se va antes, la consola recibe
 //!     `{"tipo":"permiso_cancelado","id"}`; si se va la consola, el cliente recibe
 //!     `{"tipo":"respuesta","id","sin_consola":true}`.
+//!   `{"tipo":"app.instalar"|"app.borrar"|"app.lista","pedido",…}` → a la consola; lo
+//!     que contesta (`app.instalada`, `app.borrada`, `apps`, con el mismo `pedido`)
+//!     vuelve solo a este cliente (ver `apps.rs`).
 //!
 //! `nora-puente seguir` es un cliente hecho para quien solo sabe lanzar un
 //! programa y leer sus líneas (la lógica de un extra de Bahía): copia el socket a su
@@ -49,9 +52,10 @@ fn escribe(w: &Escritor, linea: &str) -> io::Result<()> {
     w.lock().unwrap().write_all(l.as_bytes())
 }
 
-/// La consola ha contestado a un permiso: a quien lo pidió.
+/// La consola ha contestado a un permiso (por su `id`) o a un pedido (por su `pedido`): a quien lo pidió.
 pub fn responder(esperando: &Esperando, m: &Value) {
-    let id = m["id"].as_str().map(str::to_string).unwrap_or_else(|| m["id"].to_string());
+    let k = if m["pedido"].is_null() { &m["id"] } else { &m["pedido"] };
+    let id = k.as_str().map(str::to_string).unwrap_or_else(|| k.to_string());
     if let Some(w) = esperando.lock().unwrap().remove(&id) {
         let _ = escribe(&w, &m.to_string());
     }
@@ -60,7 +64,7 @@ pub fn responder(esperando: &Esperando, m: &Value) {
 /// Se ha ido la consola: nadie va a contestar los permisos pendientes.
 pub fn sin_consola(esperando: &Esperando) {
     for (id, w) in esperando.lock().unwrap().drain() {
-        let _ = escribe(&w, &serde_json::json!({"tipo": "respuesta", "id": id, "sin_consola": true}).to_string());
+        let _ = escribe(&w, &serde_json::json!({"tipo": "respuesta", "id": id, "pedido": id, "sin_consola": true}).to_string());
     }
 }
 
@@ -72,6 +76,7 @@ fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<Strin
         let w = w.clone();
         thread::spawn(move || {
             let mut mios: Vec<String> = Vec::new();
+            let mut pedidos: Vec<String> = Vec::new();
             for linea in BufReader::new(lee).lines() {
                 let Ok(linea) = linea else { break };
                 match serde_json::from_str::<Value>(&linea) {
@@ -83,12 +88,26 @@ fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<Strin
                                     m["orden"].as_str().unwrap_or("").chars().take(80).collect::<String>());
                         let _ = a_consola.lock().unwrap().send(m.to_string());
                     }
+                    Ok(m) if matches!(m["tipo"].as_str(), Some("app.instalar" | "app.borrar" | "app.lista")) => {
+                        let Some(p) = m["pedido"].as_str() else { continue };
+                        esperando.lock().unwrap().insert(p.to_string(), w.clone());
+                        if !pedidos.iter().any(|x| x == p) {
+                            pedidos.push(p.to_string());
+                        }
+                        if m["tipo"] == "app.instalar" && m["fin"] == true {
+                            crate::log!("app «{}» → consola", m["id"].as_str().unwrap_or("?"));
+                        }
+                        let _ = a_consola.lock().unwrap().send(m.to_string());
+                    }
                     Ok(m) if permitido(&m) => {
                         let _ = a_consola.lock().unwrap().send(m.to_string());
                     }
                     Ok(m) => crate::log!("socket local: «{}» no se atiende", m["tipo"].as_str().unwrap_or("?")),
                     Err(_) => crate::log!("socket local: línea que no es JSON"),
                 }
+            }
+            for p in pedidos {
+                esperando.lock().unwrap().remove(&p);
             }
             // se fue sin esperar la respuesta (la terminal decidió, o se cansó): que la consola lo quite
             for id in mios {

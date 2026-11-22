@@ -13,6 +13,9 @@
 //!     nora-puente aviso T [texto] manda un aviso a la consola
 //!     nora-puente claude-terminado  para el hook `Stop` de Claude Code (su JSON por la entrada)
 //!     nora-puente permiso         para el hook `PermissionRequest`: pregunta a la consola (A/B/Y)
+//!     nora-puente instalar <carpeta> [--abrir]  pone una app en la consola
+//!     nora-puente vigilar <carpeta>             y cada vez que guardas, recarga en caliente
+//!     nora-puente apps | borrar <id>            las apps de la consola
 //!
 //! Además abre un socket local para sus caras (ver `local.rs`) y, si usas
 //! Bahía, le deja el extra «Nora» de la barra (ver `bahia.rs`).
@@ -24,6 +27,7 @@ macro_rules! log {
 }
 pub(crate) use log;
 
+mod apps;
 mod avisos;
 mod bahia;
 mod estado;
@@ -137,6 +141,7 @@ fn atender(linea: &[u8], estado: &Estado, esperando: &local::Esperando) {
                  if m["ok"] == true { if m["siempre"] == true { "permitido siempre" } else { "permitido" } } else { "rechazado" });
             local::responder(esperando, &m);
         }
+        "app.instalada" | "app.borrada" | "apps" => local::responder(esperando, &m),
         "accion" => log!("la consola pide «{}» (aún no hace nada)", m["nombre"].as_str().unwrap_or("?")),
         otro => log!("la consola manda «{otro}» (aún no se atiende)"),
     }
@@ -212,6 +217,10 @@ fn main() {
         Some("aviso") => return avisos::orden_aviso(&args[1..]),
         Some("claude-terminado") => return avisos::orden_claude_terminado(),
         Some("permiso") => return permisos::orden_permiso(),
+        Some("instalar") => return apps::orden_instalar(&args[1..]),
+        Some("vigilar") => return apps::orden_vigilar(&args[1..]),
+        Some("apps") => return apps::orden_apps(),
+        Some("borrar") => return apps::orden_borrar(&args[1..]),
         _ => {}
     }
     if args.first().map(String::as_str) == Some("bahia") {

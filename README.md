@@ -19,9 +19,14 @@ nora-puente seguir        # cliente del socket local: estado por la salida, órd
 nora-puente bahia         # pone (o pone al día) el extra de la barra de Bahía
 nora-puente aviso "Título" "texto"   # un aviso en la consola
 nora-puente --ip 10.0.0.5 # otra consola (o NORA_IP)
+
+nora-puente instalar mi-juego/          # pone la app en la consola (--abrir, --limpiar, --id nombre)
+nora-puente vigilar mi-juego/           # y cada vez que guardas, la recarga en caliente
+nora-puente apps                        # las apps que tiene la consola
+nora-puente borrar mi-juego             # quita una
 ```
 
-Necesita Nora 0.3 o más nueva (la que trae el servidor :7070). Los usos salen de `~/Proyectos/bahia/tools/claude-usage` (o `NORA_CLAUDE_USAGE`).
+Necesita Nora 0.3 o más nueva (la que trae el servidor :7070); para las apps, Nora 0.4. Los usos salen de `~/Proyectos/bahia/tools/claude-usage` (o `NORA_CLAUDE_USAGE`).
 
 ## Qué hará
 
@@ -29,7 +34,7 @@ Necesita Nora 0.3 o más nueva (la que trae el servidor :7070). Los usos salen d
 - **Darle datos**: usos de Claude Code y Codex, notificaciones del escritorio, lo que suena (MPRIS), estado del PC.
 - **Recibir sus botones** y convertirlos en acciones: atajos, cambiar de escritorio, música, abrir una terminal.
 - **Permisos de Claude Code con A/B**: un hook `PermissionRequest` pregunta al puente, la consola pita y enseña la orden, y el botón decide. Si la consola no está, el hook no espera y la terminal pregunta como siempre.
-- **Instalar apps** (Lua) en la consola, y servir de API local para las shells del escritorio.
+- ~~**Instalar apps** (Lua) en la consola~~ (hecho: `instalar` y `vigilar`), y servir de API local para las shells del escritorio.
 
 ## En la barra de Bahía
 
@@ -57,6 +62,10 @@ TCP `:7070`, un JSON por línea. La consola hace de servidor (así no choca con 
 | `{"tipo":"permiso","id","herramienta","orden","detalle","carpeta","siempre","plazo"}` | PC → consola | pantalla de permiso: A permite, B rechaza, Y siempre |
 | `{"tipo":"respuesta","id","ok","siempre"}` | consola → PC | la respuesta, que vuelve al hook que preguntó |
 | `{"tipo":"permiso_cancelado","id"}` | PC → consola | la terminal ya decidió: fuera la pantalla |
+| `{"tipo":"app.instalar","pedido","id","archivos":{"ruta":base64},"fin","abrir","limpiar"}` | PC → consola | escribe los archivos en `apps/<id>/` (en trozos de ~1 MB, mismo `pedido`); con `fin` contesta y, si la app está abierta (o `abrir`), la vuelve a abrir |
+| `{"tipo":"app.instalada","pedido","id","ok","nueva","archivos","error"}` | consola → PC | la contestación a `app.instalar` |
+| `{"tipo":"app.borrar","pedido","id"}` → `{"tipo":"app.borrada","pedido","id","ok"}` | PC ⇄ consola | quita una app |
+| `{"tipo":"app.lista","pedido"}` → `{"tipo":"apps","pedido","apps":[{"id","nombre"}]}` | PC ⇄ consola | las apps instaladas |
 
 Ya implementado: lo de arriba (la `accion` de un aviso llega al puente, pero aún no hace nada). Pendiente: `app.instalar`, `captura`.
 
