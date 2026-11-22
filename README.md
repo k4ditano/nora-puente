@@ -32,7 +32,7 @@ Necesita Nora 0.3 o más nueva (la que trae el servidor :7070). Los usos salen d
 
 ## En la barra de Bahía
 
-Si usas [Bahía](https://github.com/k4ditano/bahia) (existe `~/.config/bahia`), el puente deja al arrancar el extra «Nora» en `~/.config/bahia/extras/`: una píldora en la barra con la batería de la consola que, al pulsarla, despliega una hoja con la app abierta, la conexión y el volumen y brillo con − y +. Sus fuentes están aquí, en `bahia/` (no en el repo de Bahía), y van dentro del binario; se reescriben si cambian, así que no se editan en `~/.config`. Sin Bahía no se toca nada. Necesita una Bahía con extras de otros programas (`extras/GUIDE.md` en su repo).
+Si usas Bahía (existe `~/.config/bahia`), el puente deja al arrancar el extra «Nora» en `~/.config/bahia/extras/`: una píldora en la barra con la batería de la consola que, al pulsarla, despliega una hoja con la app abierta, la conexión y el volumen y brillo con − y +. Sus fuentes están aquí, en `bahia/` (no en el repo de Bahía), y van dentro del binario; se reescriben si cambian, así que no se editan en `~/.config`. Sin Bahía no se toca nada. Necesita una Bahía con extras de otros programas (`extras/GUIDE.md` en su repo).
 
 Bahía lanza `nora-puente seguir` y dibuja la píldora con su campo `bar`; la hoja (`nora-hoja.plm`) es una escena propia que también habla con el puente por `seguir`. Ese cliente usa el **socket local** (`$XDG_RUNTIME_DIR/nora-puente.sock`, un JSON por línea), que cualquier otra shell puede usar: recibe `{"tipo":"estado",…}` al conectarse y en cada cambio, y puede mandar `{"tipo":"ajuste","volumen":…,"brillo":…}`.
 
