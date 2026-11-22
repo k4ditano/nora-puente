@@ -4,6 +4,7 @@
 //! Al conectarse, el cliente recibe el estado (`{"tipo":"estado",…}`) y otro
 //! cada vez que cambia. Lo que manda el cliente:
 //!   `{"tipo":"ajuste","volumen":0..100,"brillo":0..100}`  → a la consola
+//!   `{"tipo":"aviso","titulo","texto","app"}`              → a la consola
 //!
 //! `nora-puente seguir` es un cliente hecho para quien solo sabe lanzar un
 //! programa y leer sus líneas (la lógica de un extra de Bahía): copia el socket a su
@@ -29,7 +30,7 @@ pub fn ruta() -> PathBuf {
 
 /// Lo que se le puede pedir a la consola desde el PC.
 fn permitido(m: &Value) -> bool {
-    matches!(m["tipo"].as_str(), Some("ajuste"))
+    matches!(m["tipo"].as_str(), Some("ajuste" | "aviso"))
 }
 
 fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<String>>>) {

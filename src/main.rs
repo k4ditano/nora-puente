@@ -10,6 +10,8 @@
 //!     nora-puente --usos          imprime las fichas de Usos y sale
 //!     nora-puente seguir          cliente del socket local (lo usa el extra de Bahía)
 //!     nora-puente bahia           pone (o pone al día) el extra de la barra de Bahía
+//!     nora-puente aviso T [texto] manda un aviso a la consola
+//!     nora-puente claude-terminado  para el hook `Stop` de Claude Code (su JSON por la entrada)
 //!
 //! Además abre un socket local para sus caras (ver `local.rs`) y, si usas
 //! Bahía, le deja el extra «Nora» de la barra (ver `bahia.rs`).
@@ -21,6 +23,7 @@ macro_rules! log {
 }
 pub(crate) use log;
 
+mod avisos;
 mod bahia;
 mod estado;
 mod local;
@@ -127,6 +130,7 @@ fn atender(linea: &[u8], estado: &Estado) {
             estado.cambiar(|c| c.mezclar(&m));
         }
         "estado" | "ajuste" => estado.cambiar(|c| c.mezclar(&m)),
+        "accion" => log!("la consola pide «{}» (aún no hace nada)", m["nombre"].as_str().unwrap_or("?")),
         otro => log!("la consola manda «{otro}» (aún no se atiende)"),
     }
 }
@@ -191,6 +195,11 @@ fn main() {
     if args.first().map(String::as_str) == Some("seguir") {
         local::seguir();
     }
+    match args.first().map(String::as_str) {
+        Some("aviso") => return avisos::orden_aviso(&args[1..]),
+        Some("claude-terminado") => return avisos::orden_claude_terminado(),
+        _ => {}
+    }
     if args.first().map(String::as_str) == Some("bahia") {
         match bahia::instalar() {
             Ok(Some(r)) => println!("extra de Bahía puesto en {}", r.display()),
@@ -233,6 +242,10 @@ fn main() {
     }
     let estado = Arc::new(Estado::nuevo());
     let (a_consola, pedidos) = mpsc::channel();
+    {
+        let a = a_consola.clone();
+        thread::spawn(move || avisos::servicio_notificaciones(a));
+    }
     local::servir(estado.clone(), a_consola);
 
     let datos: Compartido = Arc::default();
