@@ -6,6 +6,9 @@
 //!     nora-puente vigilar  <carpeta> [--id X]
 //!     nora-puente apps
 //!     nora-puente borrar <id>
+//!     nora-puente captura [archivo.png]
+//!     nora-puente pulsar A ABAJO [--ms 90]
+//!     nora-puente log [-f]
 //!
 //! Una app es una carpeta con `app.lua` (y si quiere `info.lua`, sonidos…).
 //! Va por el socket del puente como `{"tipo":"app.instalar","pedido","id",
@@ -99,6 +102,33 @@ impl Puente {
         }
         Ok(Puente { w, lector })
     }
+    /// desde ahora, también los sucesos de la consola (log, app.abierta, app.error)
+    fn escuchar(&mut self, historia: bool) -> Result<(), String> {
+        self.manda(&json!({"tipo": "escuchar", "historia": historia}))
+    }
+    /// la siguiente línea que cumpla `vale`, o error al pasar el plazo
+    fn espera_que(&mut self, plazo: Duration, vale: impl Fn(&Value) -> bool) -> Result<Value, String> {
+        let hasta = Instant::now() + plazo;
+        let mut linea = String::new();
+        loop {
+            let falta = hasta.saturating_duration_since(Instant::now());
+            if falta.is_zero() {
+                return Err("la consola no contesta".into());
+            }
+            let _ = self.lector.get_ref().set_read_timeout(Some(falta));
+            linea.clear();
+            match self.lector.read_line(&mut linea) {
+                Ok(0) => return Err("el puente se ha ido".into()),
+                Ok(_) => {}
+                Err(_) => continue,
+            }
+            if let Ok(m) = serde_json::from_str::<Value>(&linea) {
+                if vale(&m) {
+                    return Ok(m);
+                }
+            }
+        }
+    }
     fn manda(&mut self, m: &Value) -> Result<(), String> {
         writeln!(self.w, "{m}").map_err(|e| format!("el puente se ha ido: {e}"))
     }
@@ -141,6 +171,7 @@ fn instalar(raiz: &Path, id: &str, rutas: Option<&[String]>, abrir: bool, limpia
         None => todas.keys().cloned().collect(),
     };
     let mut p = Puente::abrir()?;
+    p.escuchar(false)?;
     let pedido = pedido_nuevo();
     let mut trozo = Map::new();
     let mut llevo = 0usize;
@@ -168,11 +199,40 @@ fn instalar(raiz: &Path, id: &str, rutas: Option<&[String]>, abrir: bool, limpia
             llevo = 0;
         }
     }
-    let r = p.espera(&pedido, Duration::from_secs(30))?;
+    let mut r = p.espera(&pedido, Duration::from_secs(30))?;
     if r["ok"] != true {
         return Err(r["error"].as_str().unwrap_or("la consola no la ha instalado").to_string());
     }
+    if r["recarga"] == true {
+        // la consola la vuelve a abrir: ¿carga bien o falla?
+        let abierta = p.espera_que(Duration::from_secs(5), |m| {
+            m["id"] == id && (m["tipo"] == "app.abierta" || m["tipo"] == "app.error")
+        });
+        match abierta {
+            Ok(m) if m["tipo"] == "app.error" => r["error_lua"] = m["error"].clone(),
+            Ok(_) => r["cargada"] = Value::Bool(true),
+            Err(_) => {}
+        }
+        // los primeros fotogramas también pueden fallar (app.entrar, app.pinta)
+        if r["cargada"] == true {
+            if let Ok(m) = p.espera_que(Duration::from_millis(600), |m| m["id"] == id && m["tipo"] == "app.error") {
+                r["cargada"] = Value::Bool(false);
+                r["error_lua"] = m["error"].clone();
+            }
+        }
+    }
     Ok(r)
+}
+
+/// Cómo ha ido, en una línea (y el error de Lua entero, si lo hay).
+fn resumen(r: &Value) -> (String, Option<String>) {
+    let que = if r["nueva"] == true { "instalada" } else { "puesta al día" };
+    let base = format!("{que} ({} archivos)", r["archivos"]);
+    match (r["cargada"] == true, r["error_lua"].as_str()) {
+        (_, Some(e)) => (format!("{base}, pero FALLA al abrirse"), Some(e.to_string())),
+        (true, _) => (format!("{base}, abierta y funcionando"), None),
+        _ => (base, None),
+    }
 }
 
 struct Opciones {
@@ -224,12 +284,14 @@ fn hora() -> String {
 pub fn orden_instalar(args: &[String]) {
     let o = opciones(args, "instalar");
     match instalar(&o.carpeta, &o.id, None, o.abrir, o.limpiar) {
-        Ok(r) => println!(
-            "«{}» {} en la consola ({} archivos)",
-            o.id,
-            if r["nueva"] == true { "instalada" } else { "puesta al día" },
-            r["archivos"]
-        ),
+        Ok(r) => {
+            let (linea, error) = resumen(&r);
+            println!("«{}» {linea}", o.id);
+            if let Some(e) = error {
+                println!("{e}");
+                std::process::exit(3);
+            }
+        }
         Err(e) => sale(&e),
     }
 }
@@ -266,11 +328,15 @@ pub fn orden_vigilar(args: &[String]) {
             ultimo_intento = Instant::now();
             let rutas = if falta_todo { None } else { Some(cambiados.as_slice()) };
             match instalar(&o.carpeta, &o.id, rutas, falta_todo, false) {
-                Ok(_) => {
+                Ok(r) => {
+                    let (linea, error) = resumen(&r);
                     if falta_todo {
-                        println!("{} «{}» entera en la consola, y abierta", hora(), o.id);
+                        println!("{} «{}» entera en la consola: {linea}", hora(), o.id);
                     } else {
-                        println!("{} {} → consola", hora(), cambiados.join(", "));
+                        println!("{} {} → consola: {linea}", hora(), cambiados.join(", "));
+                    }
+                    if let Some(e) = error {
+                        println!("{e}");
                     }
                     falta_todo = false;
                     cambiados.clear();
@@ -325,6 +391,96 @@ pub fn orden_borrar(args: &[String]) {
     }
 }
 
+/// `nora-puente captura [archivo.png]`
+pub fn orden_captura(args: &[String]) {
+    let destino = PathBuf::from(args.first().map(String::as_str).unwrap_or("nora-captura.png"));
+    let r = Puente::abrir().and_then(|mut p| {
+        let pedido = pedido_nuevo();
+        p.manda(&json!({"tipo": "captura", "pedido": pedido}))?;
+        p.espera(&pedido, Duration::from_secs(10))
+    });
+    let r = r.unwrap_or_else(|e| sale(&e));
+    let png = de_base64(r["png"].as_str().unwrap_or("")).unwrap_or_else(|| sale("la captura llega rota"));
+    std::fs::write(&destino, &png).unwrap_or_else(|e| sale(&format!("{}: {e}", destino.display())));
+    println!("{} ({}x{}, {} KB)", destino.display(), r["ancho"], r["alto"], png.len() / 1024);
+}
+
+fn de_base64(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let (mut v, mut bits) = (0u32, 0);
+    for c in s.bytes() {
+        let d = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => continue,
+            _ => return None,
+        } as u32;
+        v = v << 6 | d;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((v >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+const BOTONES: [&str; 15] =
+    ["A", "B", "X", "Y", "L", "R", "L2", "R2", "SELECT", "START", "MENU", "ARRIBA", "ABAJO", "IZQUIERDA", "DERECHA"];
+
+/// `nora-puente pulsar A ABAJO [--ms 90]`: uno tras otro; vuelve cuando han acabado.
+pub fn orden_pulsar(args: &[String]) {
+    let mut ms = 90u64;
+    let mut botones = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--ms" {
+            ms = args.get(i + 1).and_then(|m| m.parse().ok()).unwrap_or_else(|| sale("--ms necesita un número"));
+            i += 1;
+        } else {
+            let b = args[i].to_uppercase();
+            if !BOTONES.contains(&b.as_str()) {
+                sale(&format!("«{}» no es un botón; valen: {}", args[i], BOTONES.join(" ")));
+            }
+            botones.push(b);
+        }
+        i += 1;
+    }
+    if botones.is_empty() {
+        sale("uso: nora-puente pulsar A [ABAJO …] [--ms 90]");
+    }
+    let mut p = Puente::abrir().unwrap_or_else(|e| sale(&e));
+    p.manda(&json!({"tipo": "pulsar", "botones": botones, "ms": ms})).unwrap_or_else(|e| sale(&e));
+    thread::sleep(Duration::from_millis((ms + 70) * botones.len() as u64 + 100));
+}
+
+/// `nora-puente log [-f]`: lo último que han escrito las apps (y sus errores); con -f, sigue.
+pub fn orden_log(args: &[String]) {
+    let seguir = args.iter().any(|a| a == "-f" || a == "--seguir");
+    let s = UnixStream::connect(crate::local::ruta()).unwrap_or_else(|_| sale("el puente no está"));
+    let mut w = s.try_clone().unwrap_or_else(|e| sale(&e.to_string()));
+    let _ = writeln!(w, "{}", json!({"tipo": "escuchar", "historia": true}));
+    let lector = BufReader::new(s);
+    // sin -f: lo que llegue enseguida (la historia) y se sale
+    if !seguir {
+        let _ = lector.get_ref().set_read_timeout(Some(Duration::from_millis(400)));
+    }
+    for linea in lector.lines() {
+        let Ok(linea) = linea else { break };
+        let Ok(m) = serde_json::from_str::<Value>(&linea) else { continue };
+        let (h, id) = (m["hora"].as_str().unwrap_or(""), m["id"].as_str().unwrap_or("?"));
+        match m["tipo"].as_str().unwrap_or("") {
+            "log" => println!("{h} {id}: {}", m["texto"].as_str().unwrap_or("")),
+            "app.abierta" => println!("{h} {id}: abierta"),
+            "app.error" => println!("{h} {id}: ERROR\n{}", m["error"].as_str().unwrap_or("")),
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -336,6 +492,9 @@ mod pruebas {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"hola, Nora!"), "aG9sYSwgTm9yYSE=");
+        for t in [&b""[..], b"a", b"ab", b"abc", b"\x00\xff\x10hola"] {
+            assert_eq!(de_base64(&base64(t)).unwrap(), t);
+        }
     }
 
     #[test]

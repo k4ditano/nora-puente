@@ -16,6 +16,9 @@
 //!     nora-puente instalar <carpeta> [--abrir]  pone una app en la consola
 //!     nora-puente vigilar <carpeta>             y cada vez que guardas, recarga en caliente
 //!     nora-puente apps | borrar <id>            las apps de la consola
+//!     nora-puente captura [archivo.png]         la pantalla de la consola
+//!     nora-puente pulsar A ABAJO [--ms 90]      pulsar botones de la consola
+//!     nora-puente log [-f]                      lo que escriben las apps (nora.log) y sus errores
 //!
 //! Además abre un socket local para sus caras (ver `local.rs`) y, si usas
 //! Bahía, le deja el extra «Nora» de la barra (ver `bahia.rs`).
@@ -118,7 +121,7 @@ fn mandar(w: &mut TcpStream, linea: &str) -> io::Result<()> {
     w.write_all(b"\n")
 }
 
-fn atender(linea: &[u8], estado: &Estado, esperando: &local::Esperando) {
+fn atender(linea: &[u8], estado: &Estado, esperando: &local::Esperando, oyentes: &local::Oyentes) {
     let Ok(m) = serde_json::from_slice::<Value>(linea) else {
         log!("la consola manda algo que no es JSON: {}", String::from_utf8_lossy(linea));
         return;
@@ -141,7 +144,14 @@ fn atender(linea: &[u8], estado: &Estado, esperando: &local::Esperando) {
                  if m["ok"] == true { if m["siempre"] == true { "permitido siempre" } else { "permitido" } } else { "rechazado" });
             local::responder(esperando, &m);
         }
-        "app.instalada" | "app.borrada" | "apps" => local::responder(esperando, &m),
+        "app.instalada" | "app.borrada" | "apps" | "captura" => local::responder(esperando, &m),
+        "log" | "app.abierta" | "app.error" => {
+            if m["tipo"] == "app.error" {
+                log!("error en «{}»: {}", m["id"].as_str().unwrap_or("?"),
+                     m["error"].as_str().unwrap_or("").lines().next().unwrap_or(""));
+            }
+            local::difundir(oyentes, &m);
+        }
         "accion" => log!("la consola pide «{}» (aún no hace nada)", m["nombre"].as_str().unwrap_or("?")),
         otro => log!("la consola manda «{otro}» (aún no se atiende)"),
     }
@@ -154,6 +164,7 @@ fn sesion(
     estado: &Estado,
     pedidos: &Receiver<String>,
     esperando: &local::Esperando,
+    oyentes: &local::Oyentes,
 ) -> io::Result<()> {
     s.set_nodelay(true)?;
     s.set_read_timeout(Some(Duration::from_millis(200)))?;
@@ -179,7 +190,7 @@ fn sesion(
             oido = Instant::now();
         }
         if buf.last() == Some(&b'\n') {
-            atender(buf.trim_ascii_end(), estado, esperando);
+            atender(buf.trim_ascii_end(), estado, esperando, oyentes);
             buf.clear();
         }
         if oido.elapsed() > SILENCIO {
@@ -221,6 +232,9 @@ fn main() {
         Some("vigilar") => return apps::orden_vigilar(&args[1..]),
         Some("apps") => return apps::orden_apps(),
         Some("borrar") => return apps::orden_borrar(&args[1..]),
+        Some("captura") => return apps::orden_captura(&args[1..]),
+        Some("pulsar") => return apps::orden_pulsar(&args[1..]),
+        Some("log") => return apps::orden_log(&args[1..]),
         _ => {}
     }
     if args.first().map(String::as_str) == Some("bahia") {
@@ -233,6 +247,10 @@ fn main() {
             }
         }
         return;
+    }
+    if let Some(otra) = args.first().filter(|a| !a.starts_with("--")) {
+        eprintln!("nora-puente: no hay orden «{otra}». Órdenes: seguir bahia aviso claude-terminado permiso instalar vigilar apps borrar captura pulsar log (y sin nada, el servicio)");
+        std::process::exit(2);
     }
     if args.iter().any(|a| a == "--usos") {
         match usos::leer() {
@@ -270,7 +288,8 @@ fn main() {
         thread::spawn(move || avisos::servicio_notificaciones(a));
     }
     let esperando: local::Esperando = Arc::default();
-    local::servir(estado.clone(), a_consola, esperando.clone());
+    let oyentes: local::Oyentes = Arc::default();
+    local::servir(estado.clone(), a_consola, esperando.clone(), oyentes.clone());
 
     let datos: Compartido = Arc::default();
     {
@@ -289,7 +308,7 @@ fn main() {
                     c.conectada = true;
                     c.ip = destino.ip().to_string();
                 });
-                if let Err(e) = sesion(s, &datos, &estado, &pedidos, &esperando) {
+                if let Err(e) = sesion(s, &datos, &estado, &pedidos, &esperando, &oyentes) {
                     log!("desconectado: {e}");
                 }
                 estado.cambiar(|c| c.conectada = false);

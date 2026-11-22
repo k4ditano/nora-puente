@@ -24,9 +24,16 @@ nora-puente instalar mi-juego/          # pone la app en la consola (--abrir, --
 nora-puente vigilar mi-juego/           # y cada vez que guardas, la recarga en caliente
 nora-puente apps                        # las apps que tiene la consola
 nora-puente borrar mi-juego             # quita una
+nora-puente captura pantalla.png        # la pantalla de la consola, en PNG
+nora-puente pulsar A ABAJO --ms 90      # pulsar botones de la consola desde el PC
+nora-puente log [-f]                    # lo que escriben las apps (nora.log) y sus errores
 ```
 
-Necesita Nora 0.3 o más nueva (la que trae el servidor :7070); para las apps, Nora 0.4. Los usos salen de `~/Proyectos/bahia/tools/claude-usage` (o `NORA_CLAUDE_USAGE`).
+`instalar` dice si la app ha abierto bien o el error de Lua con su traza (y sale con
+código 3): con `captura` y `pulsar` un agente puede hacer, mirar y jugar una app solo.
+La skill para eso está en el repo de Nora OS (`skill/`).
+
+Necesita Nora 0.3 o más nueva (la que trae el servidor :7070); para las apps, Nora 0.4; para `captura`, `pulsar`, `log` y los errores al instalar, Nora 0.5. Los usos salen de `~/Proyectos/bahia/tools/claude-usage` (o `NORA_CLAUDE_USAGE`).
 
 ## Qué hará
 
@@ -66,6 +73,10 @@ TCP `:7070`, un JSON por línea. La consola hace de servidor (así no choca con 
 | `{"tipo":"app.instalada","pedido","id","ok","nueva","archivos","error"}` | consola → PC | la contestación a `app.instalar` |
 | `{"tipo":"app.borrar","pedido","id"}` → `{"tipo":"app.borrada","pedido","id","ok"}` | PC ⇄ consola | quita una app |
 | `{"tipo":"app.lista","pedido"}` → `{"tipo":"apps","pedido","apps":[{"id","nombre"}]}` | PC ⇄ consola | las apps instaladas |
+| `{"tipo":"captura","pedido"}` → `{"tipo":"captura","pedido","ancho","alto","png"}` | PC ⇄ consola | la pantalla en PNG (base64) |
+| `{"tipo":"pulsar","botones":["A"],"ms"}` | PC → consola | como si se pulsaran, uno tras otro |
+| `{"tipo":"log","id","texto"}` | consola → PC | lo que escribe una app con `nora.log` |
+| `{"tipo":"app.abierta","id"}` / `{"tipo":"app.error","id","error"}` | consola → PC | una app se ha abierto / ha fallado (con la traza) |
 
 Ya implementado: lo de arriba (la `accion` de un aviso llega al puente, pero aún no hace nada). Pendiente: `app.instalar`, `captura`.
 
