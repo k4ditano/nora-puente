@@ -1,0 +1,17 @@
+# Servicio de usuario de nora-puente. Instalar:
+#   cargo install --path .
+#   cp servicio/nora-puente.service ~/.config/systemd/user/
+#   systemctl --user enable --now nora-puente
+# Log: journalctl --user -u nora-puente -f
+[Unit]
+Description=nora-puente: el PC habla con Nora OS (RG35XX)
+After=network.target
+
+[Service]
+ExecStart=%h/.cargo/bin/nora-puente
+# NORA_IP=192.168.7.2 por defecto (la consola por el cable USB-C)
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
