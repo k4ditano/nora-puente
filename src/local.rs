@@ -123,7 +123,7 @@ fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<Strin
                         }
                         s.oyentes.push(w.clone());
                     }
-                    Ok(m) if matches!(m["tipo"].as_str(), Some("app.instalar" | "app.borrar" | "app.lista" | "app.abrir" | "app.borrar_datos" | "captura")) => {
+                    Ok(m) if matches!(m["tipo"].as_str(), Some("app.instalar" | "app.borrar" | "app.lista" | "app.abrir" | "app.borrar_datos" | "tema.poner" | "captura")) => {
                         let Some(p) = m["pedido"].as_str() else { continue };
                         esperando.lock().unwrap().insert(p.to_string(), w.clone());
                         if !pedidos.iter().any(|x| x == p) {

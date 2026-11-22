@@ -162,9 +162,15 @@ impl Puente {
 
 /// Instala `rutas` de la app (todas si es None). Devuelve la contestación de la consola.
 fn instalar(raiz: &Path, id: &str, rutas: Option<&[String]>, abrir: bool, limpiar: bool) -> Result<Value, String> {
+    instalar_clase(raiz, id, rutas, abrir, limpiar, false)
+}
+
+/// `tema`: la carpeta es un tema (tema.lua) y va a temas/<id>; `abrir` = ponerlo.
+fn instalar_clase(raiz: &Path, id: &str, rutas: Option<&[String]>, abrir: bool, limpiar: bool, tema: bool) -> Result<Value, String> {
     let todas = archivos(raiz);
-    if !todas.contains_key("app.lua") {
-        return Err(format!("{} no tiene app.lua", raiz.display()));
+    let principal = if tema { "tema.lua" } else { "app.lua" };
+    if !todas.contains_key(principal) {
+        return Err(format!("{} no tiene {principal}", raiz.display()));
     }
     let lista: Vec<String> = match rutas {
         Some(r) => r.to_vec(),
@@ -175,7 +181,10 @@ fn instalar(raiz: &Path, id: &str, rutas: Option<&[String]>, abrir: bool, limpia
     let pedido = pedido_nuevo();
     let mut trozo = Map::new();
     let mut llevo = 0usize;
-    let base = json!({"tipo": "app.instalar", "pedido": pedido, "id": id, "abrir": abrir, "limpiar": limpiar});
+    let mut base = json!({"tipo": "app.instalar", "pedido": pedido, "id": id, "abrir": abrir, "limpiar": limpiar});
+    if tema {
+        base["clase"] = json!("tema");
+    }
     let mut primero = true;
     for (i, r) in lista.iter().enumerate() {
         let ruta = raiz.join(r);
@@ -261,6 +270,7 @@ fn opciones(args: &[String], orden: &str) -> Opciones {
             }
             "--abrir" => abrir = true,
             "--limpiar" => limpiar = true,
+            "--poner" => abrir = true,
             otro if carpeta.is_none() => carpeta = Some(PathBuf::from(otro)),
             otro => sale(&format!("no sé qué es «{otro}»")),
         }
@@ -429,6 +439,55 @@ pub fn orden_borrar_datos(args: &[String]) {
     });
     match r {
         Ok(r) => println!("datos de «{id}» borrados ({} archivos)", r["archivos"]),
+        Err(e) => sale(&e),
+    }
+}
+
+/// `nora-puente tema <carpeta> [--poner] [--id X]`
+pub fn orden_tema(args: &[String]) {
+    let o = opciones(args, "tema");
+    match instalar_clase(&o.carpeta, &o.id, None, o.abrir, o.limpiar, true) {
+        Ok(r) => println!(
+            "tema «{}» {} ({} archivos){}",
+            o.id,
+            if r["nueva"] == true { "instalado" } else { "puesto al día" },
+            r["archivos"],
+            if o.abrir { ", y puesto" } else { "" }
+        ),
+        Err(e) => sale(&e),
+    }
+}
+
+/// `nora-puente temas`
+pub fn orden_temas() {
+    let r = Puente::abrir().and_then(|mut p| {
+        let pedido = pedido_nuevo();
+        p.manda(&json!({"tipo": "app.lista", "pedido": pedido, "clase": "tema"}))?;
+        p.espera(&pedido, Duration::from_secs(5))
+    });
+    match r {
+        Ok(r) => {
+            for t in r["apps"].as_array().into_iter().flatten() {
+                let id = t["id"].as_str().unwrap_or("?");
+                let puesto = if r["tema"] == id { "  ← puesto" } else { "" };
+                println!("{id:<16} {}{puesto}", t["nombre"].as_str().unwrap_or(""));
+            }
+        }
+        Err(e) => sale(&e),
+    }
+}
+
+/// `nora-puente poner-tema <id>`
+pub fn orden_poner_tema(args: &[String]) {
+    let Some(id) = args.first().filter(|i| id_valido(i)) else { sale("uso: nora-puente poner-tema <id del tema>") };
+    let r = Puente::abrir().and_then(|mut p| {
+        let pedido = pedido_nuevo();
+        p.manda(&json!({"tipo": "tema.poner", "pedido": pedido, "id": id}))?;
+        p.espera(&pedido, Duration::from_secs(5))
+    });
+    match r {
+        Ok(r) if r["ok"] == true => println!("tema «{id}» puesto"),
+        Ok(_) => sale(&format!("la consola no tiene el tema «{id}» (nora-puente temas)")),
         Err(e) => sale(&e),
     }
 }

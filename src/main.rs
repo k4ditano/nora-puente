@@ -144,7 +144,7 @@ fn atender(linea: &[u8], estado: &Estado, esperando: &local::Esperando, oyentes:
                  if m["ok"] == true { if m["siempre"] == true { "permitido siempre" } else { "permitido" } } else { "rechazado" });
             local::responder(esperando, &m);
         }
-        "app.instalada" | "app.borrada" | "apps" | "captura" | "app.abriendo" | "app.datos_borrados" => local::responder(esperando, &m),
+        "app.instalada" | "app.borrada" | "apps" | "captura" | "app.abriendo" | "app.datos_borrados" | "tema.puesto" => local::responder(esperando, &m),
         "log" | "app.abierta" | "app.error" => {
             if m["tipo"] == "app.error" {
                 log!("error en «{}»: {}", m["id"].as_str().unwrap_or("?"),
@@ -237,6 +237,11 @@ Apps y juegos:
   pulsar A ABAJO … [--ms 90]          pulsa botones, uno tras otro (~0,25 s por orden: no es para tiempo real)
   log [-f] [-n N] [--app id]          lo que escriben las apps (nora.log), aperturas y errores
 
+Temas:
+  tema <carpeta> [--poner] [--id X]   instala (o pone al día) un tema; con --poner, lo pone
+  temas                               los temas de la consola (y cuál está puesto)
+  poner-tema <id>                     pone un tema
+
 Otras:
   aviso <título> [texto]              un aviso en la consola
   bahia                               pone el extra de la barra de Bahía
@@ -263,6 +268,9 @@ fn main() {
         Some("borrar") => return apps::orden_borrar(&args[1..]),
         Some("borrar-datos") => return apps::orden_borrar_datos(&args[1..]),
         Some("abrir") => return apps::orden_abrir(&args[1..]),
+        Some("tema") => return apps::orden_tema(&args[1..]),
+        Some("temas") => return apps::orden_temas(),
+        Some("poner-tema") => return apps::orden_poner_tema(&args[1..]),
         Some("captura") => return apps::orden_captura(&args[1..]),
         Some("pulsar") => return apps::orden_pulsar(&args[1..]),
         Some("log") => return apps::orden_log(&args[1..]),
