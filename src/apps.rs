@@ -529,8 +529,10 @@ fn de_base64(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-const BOTONES: [&str; 15] =
-    ["A", "B", "X", "Y", "L", "R", "L2", "R2", "SELECT", "START", "MENU", "ARRIBA", "ABAJO", "IZQUIERDA", "DERECHA"];
+const BOTONES: [&str; 16] = [
+    "A", "B", "X", "Y", "L", "R", "L2", "R2", "SELECT", "START", "MENU", "ARRIBA", "ABAJO", "IZQUIERDA", "DERECHA",
+    "ENCENDIDO",
+];
 
 /// `nora-puente pulsar A ABAJO [--ms 90]`: uno tras otro; vuelve cuando han acabado.
 pub fn orden_pulsar(args: &[String]) {

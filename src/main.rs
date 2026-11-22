@@ -234,7 +234,8 @@ Apps y juegos:
   borrar <id>                         quita una app (sus datos guardados se quedan)
   borrar-datos <id>                   borra los datos guardados de una app (récords, partidas)
   captura [archivo.png]               la pantalla de la consola (por defecto nora-captura.png)
-  pulsar A ABAJO … [--ms 90]          pulsa botones, uno tras otro (~0,25 s por orden: no es para tiempo real)
+  pulsar A ABAJO … [--ms 90]          pulsa botones, uno tras otro (~0,25 s por orden: no es para tiempo real);
+                                      ENCENDIDO: corto = reposo, --ms 1200 = menú de apagado
   log [-f] [-n N] [--app id]          lo que escriben las apps (nora.log), aperturas y errores
 
 Temas:
