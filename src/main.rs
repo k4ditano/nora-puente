@@ -144,7 +144,7 @@ fn atender(linea: &[u8], estado: &Estado, esperando: &local::Esperando, oyentes:
                  if m["ok"] == true { if m["siempre"] == true { "permitido siempre" } else { "permitido" } } else { "rechazado" });
             local::responder(esperando, &m);
         }
-        "app.instalada" | "app.borrada" | "apps" | "captura" => local::responder(esperando, &m),
+        "app.instalada" | "app.borrada" | "apps" | "captura" | "app.abriendo" | "app.datos_borrados" => local::responder(esperando, &m),
         "log" | "app.abierta" | "app.error" => {
             if m["tipo"] == "app.error" {
                 log!("error en «{}»: {}", m["id"].as_str().unwrap_or("?"),
@@ -219,8 +219,37 @@ fn direccion(ip: &str) -> io::Result<SocketAddr> {
         .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "dirección sin resolver"))
 }
 
+const AYUDA: &str = "nora-puente: el PC habla con Nora OS (la RG35XX)
+
+  nora-puente                         el servicio (lo arranca systemd: no hace falta lanzarlo)
+  nora-puente --ip 10.0.0.5           el servicio, con otra consola (o NORA_IP)
+  nora-puente --usos                  imprime las fichas de Usos y sale
+
+Apps y juegos:
+  instalar <carpeta> [--abrir] [--limpiar] [--id X]
+                                      pone la app en la consola; dice si abre o su error de Lua (código 3)
+  vigilar <carpeta> [--id X]          y la recarga en la consola cada vez que guardas
+  abrir <id>                          abre una app de la consola (dice si abre o su error)
+  apps                                las apps de la consola
+  borrar <id>                         quita una app (sus datos guardados se quedan)
+  borrar-datos <id>                   borra los datos guardados de una app (récords, partidas)
+  captura [archivo.png]               la pantalla de la consola (por defecto nora-captura.png)
+  pulsar A ABAJO … [--ms 90]          pulsa botones, uno tras otro (~0,25 s por orden: no es para tiempo real)
+  log [-f] [-n N] [--app id]          lo que escriben las apps (nora.log), aperturas y errores
+
+Otras:
+  aviso <título> [texto]              un aviso en la consola
+  bahia                               pone el extra de la barra de Bahía
+  seguir                              cliente del socket local (para el extra de Bahía)
+  claude-terminado | permiso          hooks de Claude Code (leen su JSON por la entrada)
+";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("-h" | "--help" | "help" | "ayuda")) {
+        print!("{AYUDA}");
+        return;
+    }
     if args.first().map(String::as_str) == Some("seguir") {
         local::seguir();
     }
@@ -232,6 +261,8 @@ fn main() {
         Some("vigilar") => return apps::orden_vigilar(&args[1..]),
         Some("apps") => return apps::orden_apps(),
         Some("borrar") => return apps::orden_borrar(&args[1..]),
+        Some("borrar-datos") => return apps::orden_borrar_datos(&args[1..]),
+        Some("abrir") => return apps::orden_abrir(&args[1..]),
         Some("captura") => return apps::orden_captura(&args[1..]),
         Some("pulsar") => return apps::orden_pulsar(&args[1..]),
         Some("log") => return apps::orden_log(&args[1..]),
@@ -248,9 +279,18 @@ fn main() {
         }
         return;
     }
-    if let Some(otra) = args.first().filter(|a| !a.starts_with("--")) {
-        eprintln!("nora-puente: no hay orden «{otra}». Órdenes: seguir bahia aviso claude-terminado permiso instalar vigilar apps borrar captura pulsar log (y sin nada, el servicio)");
-        std::process::exit(2);
+    // el servicio solo con lo suyo: cualquier otra cosa no debe arrancar un segundo puente
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--usos" => {}
+            "--ip" => i += 1,
+            otra => {
+                eprintln!("nora-puente: no conozco «{otra}»\n\n{AYUDA}");
+                std::process::exit(2);
+            }
+        }
+        i += 1;
     }
     if args.iter().any(|a| a == "--usos") {
         match usos::leer() {
@@ -289,7 +329,11 @@ fn main() {
     }
     let esperando: local::Esperando = Arc::default();
     let oyentes: local::Oyentes = Arc::default();
-    local::servir(estado.clone(), a_consola, esperando.clone(), oyentes.clone());
+    if !local::servir(estado.clone(), a_consola, esperando.clone(), oyentes.clone()) {
+        // dos puentes se quitarían la consola el uno al otro cada pocos segundos
+        eprintln!("nora-puente: ya hay un puente corriendo (systemctl --user status nora-puente); este no hace falta");
+        std::process::exit(1);
+    }
 
     let datos: Compartido = Arc::default();
     {

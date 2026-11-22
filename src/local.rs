@@ -123,7 +123,7 @@ fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<Strin
                         }
                         s.oyentes.push(w.clone());
                     }
-                    Ok(m) if matches!(m["tipo"].as_str(), Some("app.instalar" | "app.borrar" | "app.lista" | "captura")) => {
+                    Ok(m) if matches!(m["tipo"].as_str(), Some("app.instalar" | "app.borrar" | "app.lista" | "app.abrir" | "app.borrar_datos" | "captura")) => {
                         let Some(p) = m["pedido"].as_str() else { continue };
                         esperando.lock().unwrap().insert(p.to_string(), w.clone());
                         if !pedidos.iter().any(|x| x == p) {
@@ -169,18 +169,18 @@ fn cliente(s: UnixStream, estado: Arc<Estado>, a_consola: Arc<Mutex<Sender<Strin
     }
 }
 
-pub fn servir(estado: Arc<Estado>, a_consola: Sender<String>, esperando: Esperando, oyentes: Oyentes) {
+/// Abre el socket local. `false` si ya hay otro puente corriendo (y entonces este sobra).
+pub fn servir(estado: Arc<Estado>, a_consola: Sender<String>, esperando: Esperando, oyentes: Oyentes) -> bool {
     let ruta = ruta();
     if UnixStream::connect(&ruta).is_ok() {
-        crate::log!("socket local: ya hay otro puente en {}; este no lo abre", ruta.display());
-        return;
+        return false;
     }
     let _ = std::fs::remove_file(&ruta);
     let escucha = match UnixListener::bind(&ruta) {
         Ok(e) => e,
         Err(e) => {
             crate::log!("socket local: no se puede abrir {}: {e}", ruta.display());
-            return;
+            return true;
         }
     };
     let a_consola = Arc::new(Mutex::new(a_consola));
@@ -190,6 +190,7 @@ pub fn servir(estado: Arc<Estado>, a_consola: Sender<String>, esperando: Esperan
             thread::spawn(move || cliente(s, e, a, p, o));
         }
     });
+    true
 }
 
 /// `nora-puente seguir`

@@ -204,7 +204,14 @@ fn instalar(raiz: &Path, id: &str, rutas: Option<&[String]>, abrir: bool, limpia
         return Err(r["error"].as_str().unwrap_or("la consola no la ha instalado").to_string());
     }
     if r["recarga"] == true {
-        // la consola la vuelve a abrir: ¿carga bien o falla?
+        espera_apertura(&mut p, id, &mut r);
+    }
+    Ok(r)
+}
+
+/// La consola va a abrir `id`: ¿carga bien o falla? (lo apunta en `r`)
+fn espera_apertura(p: &mut Puente, id: &str, r: &mut Value) {
+    {
         let abierta = p.espera_que(Duration::from_secs(5), |m| {
             m["id"] == id && (m["tipo"] == "app.abierta" || m["tipo"] == "app.error")
         });
@@ -221,7 +228,6 @@ fn instalar(raiz: &Path, id: &str, rutas: Option<&[String]>, abrir: bool, limpia
             }
         }
     }
-    Ok(r)
 }
 
 /// Cómo ha ido, en una línea (y el error de Lua entero, si lo hay).
@@ -391,6 +397,42 @@ pub fn orden_borrar(args: &[String]) {
     }
 }
 
+/// `nora-puente abrir <id>`
+pub fn orden_abrir(args: &[String]) {
+    let Some(id) = args.first().filter(|i| id_valido(i) || *i == "inicio") else { sale("uso: nora-puente abrir <id de la app>") };
+    let mut p = Puente::abrir().unwrap_or_else(|e| sale(&e));
+    p.escuchar(false).unwrap_or_else(|e| sale(&e));
+    let pedido = pedido_nuevo();
+    p.manda(&json!({"tipo": "app.abrir", "pedido": pedido, "id": id})).unwrap_or_else(|e| sale(&e));
+    let mut r = p.espera(&pedido, Duration::from_secs(5)).unwrap_or_else(|e| sale(&e));
+    if r["ok"] != true {
+        sale(&format!("la consola no tiene «{id}»"));
+    }
+    espera_apertura(&mut p, id, &mut r);
+    match (r["cargada"] == true, r["error_lua"].as_str()) {
+        (_, Some(e)) => {
+            println!("«{id}» FALLA al abrirse\n{e}");
+            std::process::exit(3);
+        }
+        (true, _) => println!("«{id}» abierta y funcionando"),
+        _ => println!("«{id}» pedida (sin noticias de si ha abierto)"),
+    }
+}
+
+/// `nora-puente borrar-datos <id>`
+pub fn orden_borrar_datos(args: &[String]) {
+    let Some(id) = args.first().filter(|i| id_valido(i)) else { sale("uso: nora-puente borrar-datos <id de la app>") };
+    let r = Puente::abrir().and_then(|mut p| {
+        let pedido = pedido_nuevo();
+        p.manda(&json!({"tipo": "app.borrar_datos", "pedido": pedido, "id": id}))?;
+        p.espera(&pedido, Duration::from_secs(10))
+    });
+    match r {
+        Ok(r) => println!("datos de «{id}» borrados ({} archivos)", r["archivos"]),
+        Err(e) => sale(&e),
+    }
+}
+
 /// `nora-puente captura [archivo.png]`
 pub fn orden_captura(args: &[String]) {
     let destino = PathBuf::from(args.first().map(String::as_str).unwrap_or("nora-captura.png"));
@@ -454,12 +496,16 @@ pub fn orden_pulsar(args: &[String]) {
     }
     let mut p = Puente::abrir().unwrap_or_else(|e| sale(&e));
     p.manda(&json!({"tipo": "pulsar", "botones": botones, "ms": ms})).unwrap_or_else(|e| sale(&e));
-    thread::sleep(Duration::from_millis((ms + 70) * botones.len() as u64 + 100));
+    thread::sleep(Duration::from_millis((ms + 70) * botones.len() as u64));
 }
 
 /// `nora-puente log [-f]`: lo último que han escrito las apps (y sus errores); con -f, sigue.
 pub fn orden_log(args: &[String]) {
     let seguir = args.iter().any(|a| a == "-f" || a == "--seguir");
+    let valor = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    let ultimas: Option<usize> = valor("-n").map(|n| n.parse().unwrap_or_else(|_| sale("-n necesita un número")));
+    let solo_app = valor("--app");
+    let mut lineas: Vec<String> = Vec::new();
     let s = UnixStream::connect(crate::local::ruta()).unwrap_or_else(|_| sale("el puente no está"));
     let mut w = s.try_clone().unwrap_or_else(|e| sale(&e.to_string()));
     let _ = writeln!(w, "{}", json!({"tipo": "escuchar", "historia": true}));
@@ -472,12 +518,24 @@ pub fn orden_log(args: &[String]) {
         let Ok(linea) = linea else { break };
         let Ok(m) = serde_json::from_str::<Value>(&linea) else { continue };
         let (h, id) = (m["hora"].as_str().unwrap_or(""), m["id"].as_str().unwrap_or("?"));
-        match m["tipo"].as_str().unwrap_or("") {
-            "log" => println!("{h} {id}: {}", m["texto"].as_str().unwrap_or("")),
-            "app.abierta" => println!("{h} {id}: abierta"),
-            "app.error" => println!("{h} {id}: ERROR\n{}", m["error"].as_str().unwrap_or("")),
-            _ => {}
+        if solo_app.as_deref().is_some_and(|a| a != id) {
+            continue;
         }
+        let texto = match m["tipo"].as_str().unwrap_or("") {
+            "log" => format!("{h} {id}: {}", m["texto"].as_str().unwrap_or("")),
+            "app.abierta" => format!("{h} {id}: abierta"),
+            "app.error" => format!("{h} {id}: ERROR\n{}", m["error"].as_str().unwrap_or("")),
+            _ => continue,
+        };
+        if seguir {
+            println!("{texto}");
+        } else {
+            lineas.push(texto);
+        }
+    }
+    let desde = ultimas.map(|n| lineas.len().saturating_sub(n)).unwrap_or(0);
+    for l in &lineas[desde..] {
+        println!("{l}");
     }
 }
 
